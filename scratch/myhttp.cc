@@ -1,0 +1,160 @@
+/* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+/*
+ * Copyright (c) 2011 Yufei Cheng
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation;
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
+ * Author: Yufei Cheng   <yfcheng@ittc.ku.edu>
+ *
+ * James P.G. Sterbenz <jpgs@ittc.ku.edu>, director
+ * ResiliNets Research Group  http://wiki.ittc.ku.edu/resilinets
+ * Information and Telecommunication Technology Center (ITTC)
+ * and Department of Electrical Engineering and Computer Science
+ * The University of Kansas Lawrence, KS USA.
+ *
+ * Work supported in part by NSF FIND (Future Internet Design) Program
+ * under grant CNS-0626918 (Postmodern Internet Architecture),
+ * NSF grant CNS-1050226 (Multilayer Network Resilience Analysis and Experimentation on GENI),
+ * US Department of Defense (DoD), and ITTC at The University of Kansas.
+ */
+
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/applications-module.h"
+#include "ns3/config-store-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/ipv4-list-routing-helper.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/csma-module.h"
+
+#include "ns3/http-module.h"
+
+NS_LOG_COMPONENT_DEFINE ("HttpTest");
+
+using namespace ns3;
+
+int main (int argc, char *argv[])
+{
+  //
+  // Users may find it convenient to turn on explicit debugging
+  // for selected modules; the below lines suggest how to do this
+  //
+#if 0
+  LogComponentEnable ("HttpClient", LOG_LEVEL_ALL);
+  LogComponentEnable ("HttpServer", LOG_LEVEL_ALL);
+  LogComponentEnable ("HttpDistribution", LOG_LEVEL_ALL);
+  LogComponentEnable ("HttpController", LOG_LEVEL_ALL);
+#endif
+  Config::SetDefault ("ns3::TcpSocket::SegmentSize", UintegerValue (1448));
+  LogComponentEnable ("HttpTest", LOG_LEVEL_ALL);
+
+  uint32_t totalTime = 1000;
+  uint32_t dataStart = 30;
+  uint32_t nNodes = 3;
+  std::string delay = "2ms";
+  std::string dataRate = "1Mbps";
+
+  // Allow users to override the default parameters and set it to new ones from CommandLine.
+  CommandLine cmd;
+  /*
+   * The parameter for the p2p link
+   */
+  cmd.AddValue ("DataRate", "The data rate for the link", dataRate);
+  cmd.AddValue ("Delay", "The delay for the link", delay);
+  cmd.Parse (argc, argv);
+
+  SeedManager::SetSeed (99);
+  SeedManager::SetRun (1);
+
+  NS_LOG_INFO ("Create nodes.");
+  NodeContainer nodes;
+  nodes.Create (nNodes);
+  NetDeviceContainer devices;
+
+  NS_LOG_INFO ("Create channels.");
+  // We create the channels first without any IP addressing information
+  CsmaHelper csma;
+  csma.SetChannelAttribute ("DataRate", StringValue ("100Mbps"));
+  csma.SetChannelAttribute ("Delay", TimeValue (NanoSeconds (6560)));
+
+   NetDeviceContainer csmaDevices;
+   csmaDevices = csma.Install (nodes);
+
+  /*PointToPointHelper p2p;
+  p2p.SetDeviceAttribute ("DataRate", StringValue (dataRate));
+  p2p.SetChannelAttribute ("Delay", StringValue (delay));
+  devices = p2p.Install (nodes);*/
+
+  InternetStackHelper internet;
+  internet.Install (nodes);
+
+  NS_LOG_INFO ("Setting the address");
+  Ipv4AddressHelper address;
+  address.SetBase ("10.1.1.0", "255.255.255.0");
+  Ipv4InterfaceContainer interfaces;
+  interfaces = address.Assign (devices);
+
+  double randomStartTime = (1.0 / 4) / (nNodes);
+
+  uint16_t port = 80;
+  uint32_t count = 0;
+
+  HttpHelper httpHelper;
+  HttpServerHelper httpServer;
+        NS_LOG_LOGIC ("Install app in server");
+        /*HttpController httpCtrl;
+        httpCtrl=httpHelper.GetController ();*/
+        //httpHelper.SetAttribute ("SegmentSize", UintegerValue (60));
+        httpServer.SetAttribute ("Local", AddressValue (InetSocketAddress (Ipv4Address::GetAny (), port)));
+        httpServer.SetAttribute ("HttpController", PointerValue (httpHelper.GetController ()));
+        ApplicationContainer serverApps = httpServer.Install (nodes.Get (nNodes - 1));
+
+        serverApps.Start (Seconds (0.0));
+        serverApps.Stop (Seconds (totalTime));
+  for (uint32_t i = 0; i < (nNodes - 1); ++i)
+    {
+
+
+      HttpClientHelper httpClient;
+      httpClient.SetAttribute ("Peer", AddressValue (InetSocketAddress (interfaces.GetAddress (nNodes - 1), port)));
+      httpClient.SetAttribute ("HttpController", PointerValue (httpHelper.GetController ()));
+      httpClient.SetAttribute ("Internet",BooleanValue (false));
+      httpClient.SetAttribute ("MaxSessions", UintegerValue (1));
+  /*
+   * No need to define if using automatic traffic generation mode
+   */
+  httpClient.SetAttribute ("UserNumPages", UintegerValue (1));
+  httpClient.SetAttribute ("UserNumObjects", UintegerValue (1));
+  httpClient.SetAttribute ("UserServerDelay", DoubleValue (0.1));
+  httpClient.SetAttribute ("UserPageRequestGap", DoubleValue (0.1));
+  httpClient.SetAttribute ("UserRequestSize", UintegerValue (2048));
+  httpClient.SetAttribute ("UserResponseSize", UintegerValue (10240));
+  /*
+   * This controls the mode, when using http 1.1 and set the ForcePersistent as false, it will
+   * determine the connection type by itself
+   */
+  httpClient.SetAttribute ("Persistent", BooleanValue (false));
+       
+      ApplicationContainer clientApps = httpClient.Install (nodes.Get (i));
+
+      UniformVariable var;
+      clientApps.Start (Seconds (dataStart + (count * randomStartTime)));
+      clientApps.Stop (Seconds (totalTime));
+    }
+    csma.EnablePcapAll ("http", false);
+  NS_LOG_INFO ("Run Simulation.");
+  Simulator::Stop (Seconds (totalTime));
+  Simulator::Run ();
+  Simulator::Destroy ();
+}
